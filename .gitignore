@@ -1,0 +1,16 @@
+# Ignore everything except scripts/ and README.md
+/*
+!/scripts/
+/scripts/*
+!/scripts/*.user.js
+!/README.md
+!/.gitignore
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
