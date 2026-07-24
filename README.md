@@ -48,9 +48,8 @@ X（Twitter）图片查看增强工具集。
 
 ```text
 X_Image_Tools/
+├── .gitignore
 ├── README.md
-├── assets/            # 截图和示例资源
-├── docs/              # 方案讨论和过程文档
-└── scripts/           # 油猴脚本
+└── scripts/
     └── twitter-image-zoom-enhancer.user.js
 ```
