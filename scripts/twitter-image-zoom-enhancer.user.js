@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X / Twitter Image Zoom Enhancer
 // @namespace    local.x-image-zoom
-// @version      1.6.0
+// @version      1.6.2
 // @description  Add zoom, drag, and reset support to X / Twitter photo pages.
 // @author       local
 // @match        https://x.com/*
@@ -173,12 +173,20 @@
 
     state.rect = p.rect;
     var v = state.viewer;
-    v.style.left = Math.round(p.rect.left) + 'px';
-    v.style.top = Math.round(p.rect.top) + 'px';
-    v.style.width = Math.round(p.rect.width) + 'px';
-    v.style.height = Math.round(p.rect.height) + 'px';
+    // Cover the whole viewport so zoomed image can overflow freely.
+    v.style.left = '0';
+    v.style.top = '0';
+    v.style.width = '100vw';
+    v.style.height = '100vh';
 
     if (state.src === p.src && state.viewer.style.display !== 'none') return true;
+
+    // Set the image to its natural position and size at 100%.
+    state.viewerImg.style.width = Math.round(p.rect.width) + 'px';
+    state.viewerImg.style.height = Math.round(p.rect.height) + 'px';
+    state.viewerImg.style.position = 'absolute';
+    state.viewerImg.style.left = Math.round(p.rect.left) + 'px';
+    state.viewerImg.style.top = Math.round(p.rect.top) + 'px';
 
     state.src = p.src;
     state.viewerImg.src = p.src;
@@ -357,8 +365,8 @@
     var s = document.createElement('style');
     s.id = IDS.style;
     s.textContent =
-      '#' + IDS.viewer + '{position:fixed;z-index:2147483645;display:none;align-items:center;justify-content:center;overflow:hidden;background:#000}' +
-      '#' + IDS.viewer + ' img{display:block;max-width:100%;max-height:100%;object-fit:contain;transform-origin:center center;will-change:transform;user-select:none;-webkit-user-drag:none}' +
+      '#' + IDS.viewer + '{position:fixed;z-index:2147483645;display:none;align-items:center;justify-content:center;overflow:visible;background:#000}' +
+      '#' + IDS.viewer + ' img{display:block;object-fit:contain;transform-origin:center center;will-change:transform;user-select:none;-webkit-user-drag:none}' +
       '#' + IDS.indicator + '{position:fixed;bottom:24px;left:24px;z-index:2147483647;display:none;padding:4px 10px;border-radius:6px;color:#fff;background:rgba(15,20,25,0.78);font:13px system-ui,sans-serif;line-height:1.6;user-select:none;pointer-events:none}';
     document.documentElement.appendChild(s);
   }
