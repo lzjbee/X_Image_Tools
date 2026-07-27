@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X / Twitter Image Zoom Enhancer
 // @namespace    local.x-image-zoom
-// @version      1.7.3
+// @version      1.7.4
 // @description  Add zoom, drag, and reset support to X / Twitter photo pages.
 // @author       local
 // @match        https://x.com/*
@@ -24,6 +24,8 @@
     transitionDelay: 800,
     indicatorTimeout: 1400,
     leftPaneMaxX: 0.58,
+    preferredImageName: 'large',
+    relayoutDelay: 100,
   };
 
   var IDS = { style: 'xize-style', indicator: 'xize-indicator', overlay: 'xize-overlay' };
@@ -40,7 +42,8 @@
     rect: null,
     indicator: null, indicatorSpan: null, indicatorTimer: null,
     overlay: null, overlayImg: null,
-    routeTimer: null, retryTimer: null, retries: 0,
+    routeTimer: null, retryTimer: null, layoutTimer: null,
+    retries: 0,
     lastPath: '',
   };
 
@@ -57,7 +60,7 @@
     try {
       var u = new URL(s);
       if (!u.hostname.includes('pbs.twimg.com') || !u.pathname.includes('/media/')) return s;
-      if (!u.searchParams.get('name')) u.searchParams.set('name', 'large');
+      if (CONFIG.preferredImageName && !u.searchParams.get('name')) u.searchParams.set('name', CONFIG.preferredImageName);
       return u.toString();
     } catch (e) { return s; }
   }
@@ -128,25 +131,33 @@
     return best;
   }
 
+  function resetTransform() {
+    state.scale = 1; state.x = 0; state.y = 0; state.dragging = false;
+  }
+
+  function positionOverlay(rect) {
+    var v = state.overlay; if (!v || !rect) return;
+    // Position overlay exactly over X's image so its black background only
+    // covers the image. overflow: visible lets scaled image spill out freely.
+    v.style.left = Math.round(rect.left) + 'px';
+    v.style.top = Math.round(rect.top) + 'px';
+    v.style.width = Math.round(rect.width) + 'px';
+    v.style.height = Math.round(rect.height) + 'px';
+    v.style.right = 'auto';
+    v.style.bottom = 'auto';
+  }
+
   function tryLoad() {
     var p = findPhoto(); if (!p) return false;
 
     state.rect = p.rect;
-    var v = state.overlay;
-    // Position overlay exactly over X's image so its black background only
-    // covers the image. overflow: visible lets scaled image spill out freely.
-    v.style.left   = Math.round(p.rect.left) + 'px';
-    v.style.top    = Math.round(p.rect.top) + 'px';
-    v.style.width  = Math.round(p.rect.width) + 'px';
-    v.style.height = Math.round(p.rect.height) + 'px';
-    v.style.right  = 'auto';
-    v.style.bottom = 'auto';
+    positionOverlay(p.rect);
 
     if (state.src === p.src && state.overlay.style.display !== 'none') return true;
 
     state.src = p.src;
     state.overlayImg.src = p.src;
-    state.scale = 1; state.x = 0; state.y = 0; state.dragging = false;
+    resetTransform();
     updateCursor();
     apply();
     showOverlay();
@@ -168,7 +179,7 @@
   // transform
   function apply() {
     var im = state.overlayImg; if (!im) return;
-    if (Math.abs(state.scale - 1) <= 0.03) { state.scale = 1; state.x = 0; state.y = 0; }
+    if (Math.abs(state.scale - 1) <= 0.03) resetTransform();
     im.style.transform = 'translate3d(' + state.x + 'px,' + state.y + 'px,0) scale(' + state.scale + ')';
     updateCursor();
     updateIndicator();
@@ -186,15 +197,36 @@
   }
 
   // zoom / reset
-  function zoomBy(f) {
+  function zoomBy(f, anchorX, anchorY) {
     if (!state.src && !tryLoad()) return;
-    var n = clamp(state.scale * f, CONFIG.minScale, CONFIG.maxScale);
-    state.scale = Math.abs(n - 1) <= 0.03 ? 1 : n;
+
+    var oldScale = state.scale;
+    var newScale = clamp(oldScale * f, CONFIG.minScale, CONFIG.maxScale);
+    if (Math.abs(newScale - 1) <= 0.03) {
+      resetTransform();
+      apply();
+      return;
+    }
+
+    var rect = state.rect || (state.overlay && state.overlay.getBoundingClientRect());
+    if (!rect || oldScale === 0) return;
+
+    if (typeof anchorX !== 'number' || typeof anchorY !== 'number') {
+      anchorX = rect.left + rect.width / 2;
+      anchorY = rect.top + rect.height / 2;
+    }
+
+    var centerX = rect.left + rect.width / 2;
+    var centerY = rect.top + rect.height / 2;
+    var ratio = newScale / oldScale;
+    state.x = anchorX - centerX - ratio * (anchorX - centerX - state.x);
+    state.y = anchorY - centerY - ratio * (anchorY - centerY - state.y);
+    state.scale = newScale;
     apply();
   }
   function reset() {
     if (!state.src && !tryLoad()) return;
-    state.scale = 1; state.x = 0; state.y = 0; state.dragging = false;
+    resetTransform();
     apply(); updateCursor();
   }
 
@@ -210,17 +242,18 @@
   function off() {
     if (!state.enabled) return;
     state.enabled = false;
-    state.scale = 1; state.x = 0; state.y = 0; state.dragging = false;
+    resetTransform();
     state.src = ''; state.rect = null; state.retries = 0;
     hideOverlay(); hideIndicator();
     clearTimeout(state.retryTimer);
+    clearTimeout(state.layoutTimer);
   }
   function routeCheck() {
     if (isPhotoRoute()) {
       if (!state.enabled) return on();
       if (state.lastPath !== location.pathname) {
         state.lastPath = location.pathname;
-        state.scale = 1; state.x = 0; state.y = 0; state.dragging = false;
+        resetTransform();
         state.src = ''; state.rect = null; state.retries = 0;
         hideOverlay(); hideIndicator();
         clearTimeout(state.retryTimer);
@@ -232,10 +265,32 @@
   }
 
   // events
+  function pointInRect(x, y, r) {
+    return Boolean(r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom);
+  }
+  function visible(el) {
+    return Boolean(el && el.style.display !== 'none');
+  }
+  function shouldHandleWheel(e) {
+    if (!state.enabled || !e.ctrlKey || e.defaultPrevented) return false;
+    if (!state.rect || !usable(state.rect)) return false;
+    if (pointInRect(e.clientX, e.clientY, state.rect)) return true;
+    if (visible(state.overlay) && pointInRect(e.clientX, e.clientY, state.overlay.getBoundingClientRect())) return true;
+    if (visible(state.overlay) && state.overlayImg && pointInRect(e.clientX, e.clientY, state.overlayImg.getBoundingClientRect())) return true;
+    return false;
+  }
+  function scheduleRelayout() {
+    if (!state.enabled) return;
+    clearTimeout(state.layoutTimer);
+    state.layoutTimer = setTimeout(function () {
+      if (!state.enabled) return;
+      if (!tryLoad()) startScan(CONFIG.retryDelay);
+    }, CONFIG.relayoutDelay);
+  }
   function onWheel(e) {
-    if (!state.enabled || !e.ctrlKey) return;
+    if (!shouldHandleWheel(e)) return;
     e.preventDefault(); e.stopPropagation();
-    zoomBy(e.deltaY < 0 ? CONFIG.wheelStep : 1 / CONFIG.wheelStep);
+    zoomBy(e.deltaY < 0 ? CONFIG.wheelStep : 1 / CONFIG.wheelStep, e.clientX, e.clientY);
   }
   function onMD(e) {
     if (!state.enabled || e.button !== 0 || state.scale === 1) return;
@@ -270,13 +325,14 @@
     if (k === 'escape') { hideIndicator(); }
   }
   function bind() {
-    window.addEventListener('wheel', onWheel, { capture: true, passive: false });
     document.addEventListener('wheel', onWheel, { capture: true, passive: false });
     document.addEventListener('mousedown', onMD, true);
     document.addEventListener('mousemove', onMM, true);
     document.addEventListener('mouseup', onMU, true);
     document.addEventListener('dblclick', onDbl, true);
     document.addEventListener('keydown', onKD, true);
+    window.addEventListener('resize', scheduleRelayout, true);
+    window.addEventListener('orientationchange', scheduleRelayout, true);
   }
 
   // style
