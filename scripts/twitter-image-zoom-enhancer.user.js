@@ -41,7 +41,7 @@
     src: '',
     rect: null,
     indicator: null, indicatorSpan: null, indicatorTimer: null,
-    overlay: null, overlayImg: null,
+    overlay: null, overlayImg: null, loadingSrc: '', loadToken: 0,
     routeTimer: null, retryTimer: null, layoutTimer: null,
     retries: 0,
     lastPath: '',
@@ -79,6 +79,9 @@
     state.overlay = v; state.overlayImg = im;
   }
   function hideOverlay() {
+    // Invalidate pending image load callbacks before removing the source.
+    state.loadToken += 1;
+    state.loadingSrc = '';
     if (state.overlay) state.overlay.style.display = 'none';
     if (state.overlayImg) state.overlayImg.removeAttribute('src');
     state.src = ''; state.rect = null;
@@ -113,7 +116,7 @@
 
   // find photo
   function findPhoto() {
-    var best = null, bestDist = Infinity;
+    var best = null, bestScore = -Infinity;
     var maxX = window.innerWidth * CONFIG.leftPaneMaxX;
     var tcX = window.innerWidth * 0.34, tcY = window.innerHeight * 0.5;
 
@@ -123,10 +126,15 @@
       if (im.closest('[data-testid="UserAvatar-Container"]')) continue;
       var s = imgSrc(im); if (!isTwitterMedia(s)) continue;
       var r = im.getBoundingClientRect(); if (!usable(r)) continue;
-      if (r.left + r.width / 2 >= maxX) continue;
-      var dx = r.left + r.width / 2 - tcX, dy = r.top + r.height / 2 - tcY;
-      var dist = dx * dx + dy * dy - r.width * r.height * 0.02;
-      if (dist < bestDist) { bestDist = dist; best = { src: normUrl(s), rect: r }; }
+      var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      if (cx >= maxX) continue;
+
+      // During X's carousel animation several media <img>s can coexist. The
+      // visible main image is normally the largest candidate; distance only
+      // breaks ties, so an animating neighbour cannot replace it accidentally.
+      var dx = cx - tcX, dy = cy - tcY;
+      var score = r.width * r.height - (dx * dx + dy * dy) * 0.08;
+      if (score > bestScore) { bestScore = score; best = { src: normUrl(s), rect: r }; }
     }
     return best;
   }
@@ -152,16 +160,41 @@
 
     state.rect = p.rect;
     positionOverlay(p.rect);
+    if (state.src === p.src &&
+        (state.overlay.style.display !== 'none' || state.loadingSrc === p.src)) return true;
 
-    if (state.src === p.src && state.overlay.style.display !== 'none') return true;
-
+    // Never leave the preceding photo visible while a new route/carousel item
+    // is loading. X keeps outgoing and incoming <img>s in the DOM briefly;
+    // displaying the old overlay in that interval is what causes two photos to
+    // appear stacked.
+    var token = ++state.loadToken;
     state.src = p.src;
-    state.overlayImg.src = p.src;
+    state.loadingSrc = p.src;
+    state.overlay.style.display = 'none';
+    state.overlayImg.removeAttribute('src');
     resetTransform();
     updateCursor();
-    apply();
-    showOverlay();
-    updateIndicator();
+
+    state.overlayImg.onload = function () {
+      if (token !== state.loadToken || state.src !== p.src) return;
+      state.loadingSrc = '';
+      // Re-read the source rect: X may have finished its transition while the
+      // large image was loading.
+      var current = findPhoto();
+      if (!current || current.src !== p.src) { startScan(CONFIG.retryDelay); return; }
+      state.rect = current.rect;
+      positionOverlay(current.rect);
+      apply();
+      showOverlay();
+      updateIndicator();
+    };
+    state.overlayImg.onerror = function () {
+      if (token !== state.loadToken) return;
+      state.loadingSrc = '';
+      state.src = '';
+      startScan(CONFIG.retryDelay);
+    };
+    state.overlayImg.src = p.src;
     return true;
   }
 
